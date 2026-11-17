@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::Serialize;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use crate::mp4box::*;
 
@@ -10,8 +11,11 @@ pub struct SttsBox {
     pub version: u8,
     pub flags: u32,
 
+    // Shared so that cloning a track (e.g. into `Mp4Reader::tracks`) does not
+    // deep-copy the sample table. Read-only access is unchanged: `Arc<Vec<T>>`
+    // dereferences to `Vec<T>`.
     #[serde(skip_serializing)]
-    pub entries: Vec<SttsEntry>,
+    pub entries: Arc<Vec<SttsEntry>>,
 }
 
 impl SttsBox {
@@ -69,21 +73,17 @@ impl<R: Read + Seek> ReadBox<&mut R> for SttsBox {
                 "stts entry_count indicates more entries than could fit in the box",
             ));
         }
-        let mut entries = Vec::with_capacity(entry_count as usize);
-        for _i in 0..entry_count {
-            let entry = SttsEntry {
-                sample_count: reader.read_u32::<BigEndian>()?,
-                sample_delta: reader.read_u32::<BigEndian>()?,
-            };
-            entries.push(entry);
-        }
+        let entries = read_entries(reader, entry_count, entry_size, |raw| SttsEntry {
+            sample_count: u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]),
+            sample_delta: u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]),
+        })?;
 
         skip_bytes_to(reader, start + size)?;
 
         Ok(SttsBox {
             version,
             flags,
-            entries,
+            entries: entries.into(),
         })
     }
 }
@@ -125,7 +125,8 @@ mod tests {
                     sample_count: 1,
                     sample_delta: 512,
                 },
-            ],
+            ]
+            .into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();

@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::Serialize;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use crate::mp4box::*;
 
@@ -10,8 +11,9 @@ pub struct Co64Box {
     pub version: u8,
     pub flags: u32,
 
+    // Shared so that cloning a track does not deep-copy the table; see stts.
     #[serde(skip_serializing)]
-    pub entries: Vec<u64>,
+    pub entries: Arc<Vec<u64>>,
 }
 
 impl Co64Box {
@@ -63,18 +65,18 @@ impl<R: Read + Seek> ReadBox<&mut R> for Co64Box {
                 "co64 entry_count indicates more entries than could fit in the box",
             ));
         }
-        let mut entries = Vec::with_capacity(entry_count as usize);
-        for _i in 0..entry_count {
-            let chunk_offset = reader.read_u64::<BigEndian>()?;
-            entries.push(chunk_offset);
-        }
+        let entries = read_entries(reader, entry_count, entry_size, |raw| {
+            u64::from_be_bytes([
+                raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+            ])
+        })?;
 
         skip_bytes_to(reader, start + size)?;
 
         Ok(Co64Box {
             version,
             flags,
-            entries,
+            entries: entries.into(),
         })
     }
 }
@@ -106,7 +108,7 @@ mod tests {
         let src_box = Co64Box {
             version: 0,
             flags: 0,
-            entries: vec![267, 1970, 2535, 2803, 11843, 22223, 33584],
+            entries: vec![267, 1970, 2535, 2803, 11843, 22223, 33584].into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();

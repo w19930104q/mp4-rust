@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::Serialize;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use crate::mp4box::*;
 
@@ -10,8 +11,9 @@ pub struct StssBox {
     pub version: u8,
     pub flags: u32,
 
+    // Shared so that cloning a track does not deep-copy the table; see stts.
     #[serde(skip_serializing)]
-    pub entries: Vec<u32>,
+    pub entries: Arc<Vec<u32>>,
 }
 
 impl StssBox {
@@ -63,18 +65,16 @@ impl<R: Read + Seek> ReadBox<&mut R> for StssBox {
                 "stss entry_count indicates more entries than could fit in the box",
             ));
         }
-        let mut entries = Vec::with_capacity(entry_count as usize);
-        for _i in 0..entry_count {
-            let sample_number = reader.read_u32::<BigEndian>()?;
-            entries.push(sample_number);
-        }
+        let entries = read_entries(reader, entry_count, entry_size, |raw| {
+            u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]])
+        })?;
 
         skip_bytes_to(reader, start + size)?;
 
         Ok(StssBox {
             version,
             flags,
-            entries,
+            entries: entries.into(),
         })
     }
 }
@@ -106,7 +106,7 @@ mod tests {
         let src_box = StssBox {
             version: 0,
             flags: 0,
-            entries: vec![1, 61, 121, 181, 241, 301, 361, 421, 481],
+            entries: vec![1, 61, 121, 181, 241, 301, 361, 421, 481].into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();

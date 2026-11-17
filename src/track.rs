@@ -2,6 +2,7 @@ use bytes::BytesMut;
 use std::cmp;
 use std::convert::TryFrom;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::mp4box::traf::TrafBox;
@@ -697,52 +698,47 @@ impl Mp4TrackWriter {
     }
 
     fn update_sample_sizes(&mut self, size: u32) {
-        if self.trak.mdia.minf.stbl.stsz.sample_count == 0 {
+        let stsz = &mut self.trak.mdia.minf.stbl.stsz;
+        if stsz.sample_count == 0 {
             if size == 0 {
-                self.trak.mdia.minf.stbl.stsz.sample_size = 0;
+                stsz.sample_size = 0;
                 self.is_fixed_sample_size = false;
-                self.trak.mdia.minf.stbl.stsz.sample_sizes.push(0);
+                Arc::make_mut(&mut stsz.sample_sizes).push(0);
             } else {
-                self.trak.mdia.minf.stbl.stsz.sample_size = size;
+                stsz.sample_size = size;
                 self.fixed_sample_size = size;
                 self.is_fixed_sample_size = true;
             }
         } else if self.is_fixed_sample_size {
             if self.fixed_sample_size != size {
                 self.is_fixed_sample_size = false;
-                if self.trak.mdia.minf.stbl.stsz.sample_size > 0 {
-                    self.trak.mdia.minf.stbl.stsz.sample_size = 0;
-                    for _ in 0..self.trak.mdia.minf.stbl.stsz.sample_count {
-                        self.trak
-                            .mdia
-                            .minf
-                            .stbl
-                            .stsz
-                            .sample_sizes
-                            .push(self.fixed_sample_size);
+                if stsz.sample_size > 0 {
+                    stsz.sample_size = 0;
+                    for _ in 0..stsz.sample_count {
+                        Arc::make_mut(&mut stsz.sample_sizes).push(self.fixed_sample_size);
                     }
                 }
-                self.trak.mdia.minf.stbl.stsz.sample_sizes.push(size);
+                Arc::make_mut(&mut stsz.sample_sizes).push(size);
             }
         } else {
-            self.trak.mdia.minf.stbl.stsz.sample_sizes.push(size);
+            Arc::make_mut(&mut stsz.sample_sizes).push(size);
         }
-        self.trak.mdia.minf.stbl.stsz.sample_count += 1;
+        stsz.sample_count += 1;
     }
 
     fn update_sample_times(&mut self, dur: u32) {
-        if let Some(ref mut entry) = self.trak.mdia.minf.stbl.stts.entries.last_mut() {
+        let entries = Arc::make_mut(&mut self.trak.mdia.minf.stbl.stts.entries);
+        if let Some(entry) = entries.last_mut() {
             if entry.sample_delta == dur {
                 entry.sample_count += 1;
                 return;
             }
         }
 
-        let entry = SttsEntry {
+        entries.push(SttsEntry {
             sample_count: 1,
             sample_delta: dur,
-        };
-        self.trak.mdia.minf.stbl.stts.entries.push(entry);
+        });
     }
 
     fn update_rendering_offsets(&mut self, offset: i32) {
@@ -754,28 +750,27 @@ impl Mp4TrackWriter {
             }
             let mut ctts = CttsBox::default();
             if self.sample_id > 1 {
-                let entry = CttsEntry {
+                Arc::make_mut(&mut ctts.entries).push(CttsEntry {
                     sample_count: self.sample_id - 1,
                     sample_offset: 0,
-                };
-                ctts.entries.push(entry);
+                });
             }
             self.trak.mdia.minf.stbl.ctts = Some(ctts);
             self.trak.mdia.minf.stbl.ctts.as_mut().unwrap()
         };
 
-        if let Some(ref mut entry) = ctts.entries.last_mut() {
+        let entries = Arc::make_mut(&mut ctts.entries);
+        if let Some(entry) = entries.last_mut() {
             if entry.sample_offset == offset {
                 entry.sample_count += 1;
                 return;
             }
         }
 
-        let entry = CttsEntry {
+        entries.push(CttsEntry {
             sample_count: 1,
             sample_offset: offset,
-        };
-        ctts.entries.push(entry);
+        });
     }
 
     fn update_sync_samples(&mut self, is_sync: bool) {
@@ -784,7 +779,7 @@ impl Mp4TrackWriter {
                 return;
             }
 
-            stss.entries.push(self.sample_id);
+            Arc::make_mut(&mut stss.entries).push(self.sample_id);
         } else {
             if !is_sync {
                 return;
@@ -792,7 +787,7 @@ impl Mp4TrackWriter {
 
             // Create the stts box if not found and push the entry.
             let mut stss = StssBox::default();
-            stss.entries.push(self.sample_id);
+            Arc::make_mut(&mut stss.entries).push(self.sample_id);
             self.trak.mdia.minf.stbl.stss = Some(stss);
         };
     }
@@ -858,12 +853,12 @@ impl Mp4TrackWriter {
             sample_description_index: 1,
             first_sample: self.sample_id - self.chunk_samples + 1,
         };
-        self.trak.mdia.minf.stbl.stsc.entries.push(entry);
+        Arc::make_mut(&mut self.trak.mdia.minf.stbl.stsc.entries).push(entry);
     }
 
     fn update_chunk_offsets(&mut self, offset: u64) {
         let co64 = self.trak.mdia.minf.stbl.co64.as_mut().unwrap();
-        co64.entries.push(offset);
+        Arc::make_mut(&mut co64.entries).push(offset);
     }
 
     fn write_chunk<W: Write + Seek>(&mut self, writer: &mut W) -> Result<()> {

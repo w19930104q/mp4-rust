@@ -326,6 +326,37 @@ pub fn read_box_header_ext<R: Read>(reader: &mut R) -> Result<(u8, u32)> {
     Ok((version, flags))
 }
 
+/// Maximum number of table entries parsed per bulk read. Bounds the
+/// transient scratch buffer (32 KiB for 8-byte entries) while reducing the
+/// number of `Read` calls from two per entry to one per chunk.
+const ENTRY_READ_CHUNK: usize = 4096;
+
+/// Reads `entry_count` fixed-size big-endian entries using bounded-size bulk
+/// reads, parsing each entry's raw bytes with `parse`.
+///
+/// Large sample tables (stts/ctts/stsc/stsz/stco/co64/stss) used to issue one
+/// tiny `Read` call per entry field — one syscall per field on unbuffered
+/// readers. Reading the table in chunks keeps peak memory bounded without
+/// copying the whole table into a scratch buffer first.
+pub(crate) fn read_entries<R: Read, T>(
+    reader: &mut R,
+    entry_count: u32,
+    entry_size: usize,
+    parse: impl Fn(&[u8]) -> T,
+) -> Result<Vec<T>> {
+    let mut entries = Vec::with_capacity(entry_count as usize);
+    let mut scratch = vec![0u8; (entry_count as usize).min(ENTRY_READ_CHUNK) * entry_size];
+    let mut remaining = entry_count as usize;
+    while remaining > 0 {
+        let n = remaining.min(ENTRY_READ_CHUNK);
+        let chunk = &mut scratch[..n * entry_size];
+        reader.read_exact(chunk)?;
+        entries.extend(chunk.chunks_exact(entry_size).map(&parse));
+        remaining -= n;
+    }
+    Ok(entries)
+}
+
 pub fn write_box_header_ext<W: Write>(w: &mut W, v: u8, f: u32) -> Result<u64> {
     w.write_u8(v)?;
     w.write_u24::<BigEndian>(f)?;

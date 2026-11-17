@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::Serialize;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use crate::mp4box::*;
 
@@ -12,8 +13,9 @@ pub struct StszBox {
     pub sample_size: u32,
     pub sample_count: u32,
 
+    // Shared so that cloning a track does not deep-copy the table; see stts.
     #[serde(skip_serializing)]
-    pub sample_sizes: Vec<u32>,
+    pub sample_sizes: Arc<Vec<u32>>,
 }
 
 impl StszBox {
@@ -65,7 +67,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for StszBox {
             0
         };
         let sample_count = reader.read_u32::<BigEndian>()?;
-        let mut sample_sizes = Vec::new();
+        let mut sample_sizes = Arc::new(Vec::new());
         if sample_size == 0 {
             if u64::from(sample_count)
                 > size
@@ -77,11 +79,10 @@ impl<R: Read + Seek> ReadBox<&mut R> for StszBox {
                     "stsz sample_count indicates more values than could fit in the box",
                 ));
             }
-            sample_sizes.reserve(sample_count as usize);
-            for _ in 0..sample_count {
-                let sample_number = reader.read_u32::<BigEndian>()?;
-                sample_sizes.push(sample_number);
-            }
+            sample_sizes = read_entries(reader, sample_count, stsz_item_size, |raw| {
+                u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]])
+            })?
+            .into();
         }
 
         skip_bytes_to(reader, start + size)?;
@@ -131,7 +132,7 @@ mod tests {
             flags: 0,
             sample_size: 1165,
             sample_count: 12,
-            sample_sizes: vec![],
+            sample_sizes: vec![].into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();
@@ -153,7 +154,7 @@ mod tests {
             flags: 0,
             sample_size: 0,
             sample_count: 9,
-            sample_sizes: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730],
+            sample_sizes: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730].into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();

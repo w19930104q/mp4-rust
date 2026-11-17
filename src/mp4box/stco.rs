@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::Serialize;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use crate::mp4box::*;
 
@@ -10,8 +11,9 @@ pub struct StcoBox {
     pub version: u8,
     pub flags: u32,
 
+    // Shared so that cloning a track does not deep-copy the table; see stts.
     #[serde(skip_serializing)]
-    pub entries: Vec<u32>,
+    pub entries: Arc<Vec<u32>>,
 }
 
 impl StcoBox {
@@ -63,18 +65,16 @@ impl<R: Read + Seek> ReadBox<&mut R> for StcoBox {
                 "stco entry_count indicates more entries than could fit in the box",
             ));
         }
-        let mut entries = Vec::with_capacity(entry_count as usize);
-        for _i in 0..entry_count {
-            let chunk_offset = reader.read_u32::<BigEndian>()?;
-            entries.push(chunk_offset);
-        }
+        let entries = read_entries(reader, entry_count, entry_size, |raw| {
+            u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]])
+        })?;
 
         skip_bytes_to(reader, start + size)?;
 
         Ok(StcoBox {
             version,
             flags,
-            entries,
+            entries: entries.into(),
         })
     }
 }
@@ -108,7 +108,7 @@ impl std::convert::TryFrom<&co64::Co64Box> for StcoBox {
         Ok(Self {
             version: 0,
             flags: 0,
-            entries,
+            entries: entries.into(),
         })
     }
 }
@@ -124,7 +124,7 @@ mod tests {
         let src_box = StcoBox {
             version: 0,
             flags: 0,
-            entries: vec![267, 1970, 2535, 2803, 11843, 22223, 33584],
+            entries: vec![267, 1970, 2535, 2803, 11843, 22223, 33584].into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();

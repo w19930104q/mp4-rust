@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::Serialize;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use crate::mp4box::*;
 
@@ -10,8 +11,9 @@ pub struct StscBox {
     pub version: u8,
     pub flags: u32,
 
+    // Shared so that cloning a track does not deep-copy the table; see stts.
     #[serde(skip_serializing)]
-    pub entries: Vec<StscEntry>,
+    pub entries: Arc<Vec<StscEntry>>,
 }
 
 impl StscBox {
@@ -71,16 +73,12 @@ impl<R: Read + Seek> ReadBox<&mut R> for StscBox {
                 "stsc entry_count indicates more entries than could fit in the box",
             ));
         }
-        let mut entries = Vec::with_capacity(entry_count as usize);
-        for _ in 0..entry_count {
-            let entry = StscEntry {
-                first_chunk: reader.read_u32::<BigEndian>()?,
-                samples_per_chunk: reader.read_u32::<BigEndian>()?,
-                sample_description_index: reader.read_u32::<BigEndian>()?,
-                first_sample: 0,
-            };
-            entries.push(entry);
-        }
+        let mut entries = read_entries(reader, entry_count, entry_size, |raw| StscEntry {
+            first_chunk: u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]),
+            samples_per_chunk: u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]),
+            sample_description_index: u32::from_be_bytes([raw[8], raw[9], raw[10], raw[11]]),
+            first_sample: 0,
+        })?;
 
         let mut sample_id = 1;
         for i in 0..entry_count {
@@ -107,7 +105,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for StscBox {
         Ok(StscBox {
             version,
             flags,
-            entries,
+            entries: entries.into(),
         })
     }
 }
@@ -154,7 +152,8 @@ mod tests {
                     sample_description_index: 1,
                     first_sample: 19026,
                 },
-            ],
+            ]
+            .into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();

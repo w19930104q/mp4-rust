@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::Serialize;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use crate::mp4box::*;
 
@@ -13,14 +14,16 @@ pub struct TrunBox {
     pub data_offset: Option<i32>,
     pub first_sample_flags: Option<u32>,
 
+    // Shared so that cloning a traf into a track does not deep-copy the
+    // per-sample arrays; see stts.
     #[serde(skip_serializing)]
-    pub sample_durations: Vec<u32>,
+    pub sample_durations: Arc<Vec<u32>>,
     #[serde(skip_serializing)]
-    pub sample_sizes: Vec<u32>,
+    pub sample_sizes: Arc<Vec<u32>>,
     #[serde(skip_serializing)]
-    pub sample_flags: Vec<u32>,
+    pub sample_flags: Arc<Vec<u32>>,
     #[serde(skip_serializing)]
-    pub sample_cts: Vec<u32>,
+    pub sample_cts: Arc<Vec<u32>>,
 }
 
 impl TrunBox {
@@ -163,10 +166,10 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrunBox {
             sample_count,
             data_offset,
             first_sample_flags,
-            sample_durations,
-            sample_sizes,
-            sample_flags,
-            sample_cts,
+            sample_durations: sample_durations.into(),
+            sample_sizes: sample_sizes.into(),
+            sample_flags: sample_flags.into(),
+            sample_cts: sample_cts.into(),
         })
     }
 }
@@ -220,11 +223,11 @@ mod tests {
             flags: 0,
             data_offset: None,
             sample_count: 0,
-            sample_sizes: vec![],
-            sample_flags: vec![],
+            sample_sizes: vec![].into(),
+            sample_flags: vec![].into(),
             first_sample_flags: None,
-            sample_durations: vec![],
-            sample_cts: vec![],
+            sample_durations: vec![].into(),
+            sample_cts: vec![].into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();
@@ -249,11 +252,11 @@ mod tests {
                 | TrunBox::FLAG_SAMPLE_CTS,
             data_offset: None,
             sample_count: 9,
-            sample_sizes: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730],
-            sample_flags: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730],
+            sample_sizes: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730].into(),
+            sample_flags: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730].into(),
             first_sample_flags: None,
-            sample_durations: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730],
-            sample_cts: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730],
+            sample_durations: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730].into(),
+            sample_cts: vec![1165, 11, 11, 8545, 10126, 10866, 9643, 9351, 7730].into(),
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();
